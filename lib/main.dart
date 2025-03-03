@@ -26,26 +26,69 @@ class WebViewScreen extends StatefulWidget {
 }
 
 class _WebViewScreenState extends State<WebViewScreen> {
-  late WebViewController _controller;
-  bool _isFirstLoad = true;
+  late final WebViewController _controller;
   bool _isLoading = true;
   bool _isError = false;
   bool _isServerError = false; // Detects 500 errors
   double _progress = 0.0;
-  String _currentUrl = "https://getrestt.com/"; // Store last visited URL
+  String _currentUrl = "https://getrestt.com/";
 
   String get mobileUserAgent {
-    if (Platform.isIOS) {
-      return "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/537.36";
-    } else {
-      return "Mozilla/5.0 (Linux; Android 10; Mobile; rv:89.0) Gecko/89.0 Firefox/89.0";
-    }
+    return Platform.isIOS
+        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/537.36"
+        : "Mozilla/5.0 (Linux; Android 10; Mobile; rv:89.0) Gecko/89.0 Firefox/89.0";
   }
 
   @override
   void initState() {
     super.initState();
-    WebView.platform = SurfaceAndroidWebView();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent(mobileUserAgent)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (String url) {
+            setState(() {
+              _isLoading = true;
+              _progress = 0.1;
+              _isServerError = false;
+              _currentUrl = url;
+            });
+          },
+          onPageFinished: (String url) async {
+            setState(() {
+              _isLoading = false;
+              _progress = 1.0;
+            });
+
+            // Inject JavaScript to check for 500 errors
+            String pageContent = await _controller.runJavaScriptReturningResult("""
+                document.body.innerText;
+              """) as String;
+            pageContent = pageContent.replaceAll('"', '').trim();
+
+            if (pageContent.contains("500 Internal Server Error") ||
+                pageContent.contains("Server Error in '/' Application.")) {
+              setState(() {
+                _isServerError = true;
+              });
+            }
+          },
+          onProgress: (int progress) {
+            setState(() {
+              _progress = progress / 100;
+            });
+          },
+          onWebResourceError: (WebResourceError error) {
+            if (error.errorCode == -2 || error.errorCode == -105) {
+              setState(() {
+                _isError = true;
+              });
+            }
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(_currentUrl));
   }
 
   @override
@@ -54,93 +97,46 @@ class _WebViewScreenState extends State<WebViewScreen> {
       onWillPop: () async {
         if (await _controller.canGoBack()) {
           _controller.goBack();
-          return Future.value(false);
+          return false;
         }
-        return Future.value(true);
+        return true;
       },
       child: Scaffold(
         appBar: PreferredSize(
           preferredSize: const Size.fromHeight(4.0),
           child: _isLoading
               ? LinearProgressIndicator(
-            value: _progress,
-            backgroundColor: Colors.white,
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-          )
+                  value: _progress,
+                  backgroundColor: Colors.white,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+                )
               : const SizedBox(height: 4.0),
         ),
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.only(top: 30.0),
-            child: Stack(
-              children: [
-                if (!_isError && !_isServerError)
-                  WebView(
-                    initialUrl: _currentUrl, // Use stored URL
-                    javascriptMode: JavascriptMode.unrestricted,
-                    userAgent: mobileUserAgent,
-                    onWebViewCreated: (WebViewController webViewController) {
-                      _controller = webViewController;
-                    },
-                    onPageStarted: (String url) {
-                      setState(() {
-                        _isLoading = true;
-                        _progress = 0.1;
-                        _isServerError = false;
-                        _currentUrl = url; // Store last visited URL
-                      });
-                    },
-                    onPageFinished: (String url) async {
-                      setState(() {
-                        _isLoading = false;
-                        _progress = 1.0;
-                      });
+          child: Stack(
+            children: [
+              if (!_isError && !_isServerError)
+                WebViewWidget(controller: _controller),
 
-                      // Inject JavaScript to check for 500 error on the page
-                      String pageContent = await _controller.runJavascriptReturningResult("""
-                          document.body.innerText;
-                        """);
-                      pageContent = pageContent.replaceAll('"', '').trim();
-
-                      if (pageContent.contains("500 Internal Server Error") ||
-                          pageContent.contains("Server Error in '/' Application.")) {
-                        setState(() {
-                          _isServerError = true;
-                        });
-                      }
-                    },
-                    onProgress: (int progress) {
-                      setState(() {
-                        _progress = progress / 100;
-                      });
-                    },
-                    onWebResourceError: (WebResourceError error) {
-                      if (error.errorCode == -2 || error.errorCode == -105) {
-                        setState(() {
-                          _isError = true;
-                        });
-                      }
-                    },
+              // Loading Indicator on First Load
+              if (_isLoading)
+                Center(
+                  child: CircularProgressIndicator(
+                    strokeWidth: 5,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                        Colors.orange.withOpacity(0.5)),
                   ),
+                ),
 
-                // First Load Indicator
-                if (_isFirstLoad && _isLoading)
-                  Center(
-                    child: CircularProgressIndicator(
-                      strokeWidth: 5,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.orange.withOpacity(0.5)),
-                    ),
-                  ),
+              // Internet Error Screen
+              if (_isError)
+                _buildErrorScreen("Please check your internet!", _reloadPage),
 
-                // Internet Error Screen
-                if (_isError)
-                  _buildErrorScreen("Please check your internet!", _reloadPage),
-
-                // 500 Internal Server Error Screen
-                if (_isServerError)
-                  _buildErrorScreen("Server Error. Try again now!", _reloadCurrentUrl),
-              ],
-            ),
+              // 500 Internal Server Error Screen
+              if (_isServerError)
+                _buildErrorScreen("Server Error. Try again now!",
+                    _reloadCurrentUrl),
+            ],
           ),
         ),
       ),
@@ -154,22 +150,24 @@ class _WebViewScreenState extends State<WebViewScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error, color: Colors.white, size: 80),
-            SizedBox(height: 20),
+            const Icon(Icons.error, color: Colors.white, size: 80),
+            const SizedBox(height: 20),
             Text(
               message,
-              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
             ElevatedButton(
               onPressed: onRetry,
               child: const Text("Try Again", style: TextStyle(fontSize: 18)),
               style: ElevatedButton.styleFrom(
-                primary: Colors.white,
-                onPrimary: Colors.blueGrey.shade900,
-                padding: EdgeInsets.symmetric(horizontal: 40, vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.blueGrey.shade900,
+                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30)),
               ),
             ),
           ],
@@ -185,7 +183,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       _isServerError = false;
       _isLoading = true;
     });
-    _controller.loadUrl(_currentUrl); // Reload last visited URL
+    _controller.loadRequest(Uri.parse(_currentUrl));
   }
 
   void _reloadPage() {
